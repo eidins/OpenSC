@@ -67,35 +67,37 @@ struct _sc_driver_entry {
 };
 
 static const struct _sc_driver_entry internal_card_drivers[] = {
-	{ "cardos",	(void *(*)(void)) sc_get_cardos_driver },
+/*	{ "cardos",	(void *(*)(void)) sc_get_cardos_driver },
 	{ "flex",	(void *(*)(void)) sc_get_cryptoflex_driver },
-	{ "cyberflex",	(void *(*)(void)) sc_get_cyberflex_driver },
+	{ "cyberflex",	(void *(*)(void)) sc_get_cyberflex_driver },*/
 #ifdef ENABLE_OPENSSL
-	{ "gpk",	(void *(*)(void)) sc_get_gpk_driver },
+/*	{ "gpk",	(void *(*)(void)) sc_get_gpk_driver },*/
 #endif
-	{ "gemsafeV1",	(void *(*)(void)) sc_get_gemsafeV1_driver },
+/*	{ "gemsafeV1",	(void *(*)(void)) sc_get_gemsafeV1_driver },
 	{ "miocos",	(void *(*)(void)) sc_get_miocos_driver },
 	{ "asepcos",	(void *(*)(void)) sc_get_asepcos_driver },
 	{ "starcos",	(void *(*)(void)) sc_get_starcos_driver },
 	{ "tcos",	(void *(*)(void)) sc_get_tcos_driver },
-	{ "jcop",	(void *(*)(void)) sc_get_jcop_driver },
+	{ "openpgp",	(void *(*)(void)) sc_get_openpgp_driver },
+	{ "jcop",	(void *(*)(void)) sc_get_jcop_driver },*/
 #ifdef ENABLE_OPENSSL
-	{ "oberthur",	(void *(*)(void)) sc_get_oberthur_driver },
-	{ "authentic",	(void *(*)(void)) sc_get_authentic_driver },
+/*	{ "oberthur",	(void *(*)(void)) sc_get_oberthur_driver },
+	{ "authentic",	(void *(*)(void)) sc_get_authentic_driver },*/
 	{ "iasecc",	(void *(*)(void)) sc_get_iasecc_driver },
 #endif
-	{ "belpic",	(void *(*)(void)) sc_get_belpic_driver },
+/*	{ "belpic",	(void *(*)(void)) sc_get_belpic_driver },
 	{ "ias",		(void *(*)(void)) sc_get_ias_driver },
 	{ "incrypto34", (void *(*)(void)) sc_get_incrypto34_driver },
 	{ "acos5",	(void *(*)(void)) sc_get_acos5_driver },
-	{ "akis",	(void *(*)(void)) sc_get_akis_driver },
+	{ "akis",	(void *(*)(void)) sc_get_akis_driver },*/
 #ifdef ENABLE_OPENSSL
 	{ "entersafe",(void *(*)(void)) sc_get_entersafe_driver },
 #ifdef ENABLE_SM
 	{ "epass2003",(void *(*)(void)) sc_get_epass2003_driver },
 #endif
+/*	{ "entersafe",(void *(*)(void)) sc_get_entersafe_driver },*/
 #endif
-	{ "rutoken",	(void *(*)(void)) sc_get_rutoken_driver },
+/*	{ "rutoken",	(void *(*)(void)) sc_get_rutoken_driver },
 	{ "rutoken_ecp",(void *(*)(void)) sc_get_rtecp_driver },
 	{ "westcos",	(void *(*)(void)) sc_get_westcos_driver },
 	{ "myeid",      (void *(*)(void)) sc_get_myeid_driver },
@@ -119,6 +121,17 @@ static const struct _sc_driver_entry internal_card_drivers[] = {
 #endif
 	{ "openpgp",	(void *(*)(void)) sc_get_openpgp_driver },
 	{ "jpki",	(void *(*)(void)) sc_get_jpki_driver },
+	{ "myeid",      (void *(*)(void)) sc_get_myeid_driver },
+
+/* Here should be placed drivers that need some APDU transactions to
+ * recognise its cards. */
+/*	{ "setcos",	(void *(*)(void)) sc_get_setcos_driver },
+	{ "muscle",	(void *(*)(void)) sc_get_muscle_driver },
+	{ "atrust-acos",(void *(*)(void)) sc_get_atrust_acos_driver },
+	{ "PIV-II",	(void *(*)(void)) sc_get_piv_driver },
+	{ "itacns",	(void *(*)(void)) sc_get_itacns_driver },*/
+	/* javacard without supported applet - last before default */
+/*	{ "javacard",	(void *(*)(void)) sc_get_javacard_driver },*/
 	/* The default driver should be last, as it handles all the
 	 * unrecognized cards. */
 	{ "default",	(void *(*)(void)) sc_get_default_driver },
@@ -289,7 +302,38 @@ int sc_ctx_log_to_file(sc_context_t *ctx, const char* filename)
 	else if (!strcmp(filename, "stderr"))
 		ctx->debug_file = stderr;
 	else {
+#ifndef _WIN32
 		ctx->debug_file = fopen(filename, "a");
+#else
+        // under Windows create a log file per process
+        char szExeFileName[512];
+        if (GetModuleFileName(NULL, szExeFileName, 512))
+        {
+            char* ptr = &szExeFileName[strlen(szExeFileName)-1];
+            while ((ptr != szExeFileName) && (*ptr != '\\') && (*ptr != '/'))
+            {
+                ptr--;
+            }
+
+            if (ptr == szExeFileName)
+            {
+                ctx->debug_file = fopen(filename, "a");
+            }
+            else
+            {                
+                // concatenate exe name with the file given in conf
+                char *newFileName;
+                ptr++;                
+                newFileName = (char*) malloc(strlen(filename) + strlen(ptr) + 10);
+                sprintf(newFileName, "%s_%s.log", filename, ptr);
+                ctx->debug_file = fopen(newFileName, "a");
+                free(newFileName);
+            }
+
+        }
+        else
+            ctx->debug_file = fopen(filename, "a");
+#endif
 		if (ctx->debug_file == NULL)
 			return SC_ERROR_INTERNAL;
 	}
@@ -310,11 +354,10 @@ load_parameters(sc_context_t *ctx, scconf_block *block, struct _sc_ctx_options *
 	DWORD expanded_len;
 #endif
 
-	reopen = scconf_get_bool(block, "reopen_debug_file", 1);
-
-	debug = scconf_get_int(block, "debug", ctx->debug);
-	if (debug > ctx->debug)
-		ctx->debug = debug;
+	ctx->debug = scconf_get_int(block, "debug", ctx->debug);
+	debug = getenv("LATVIAEID_DEBUG");
+	if (debug)
+		ctx->debug = atoi(debug);
 
 	val = scconf_get_str(block, "debug_file", NULL);
 	if (val)   {
@@ -616,16 +659,36 @@ static void process_config_file(sc_context_t *ctx, struct _sc_ctx_options *opts)
 
 	memset(ctx->conf_blocks, 0, sizeof(ctx->conf_blocks));
 #ifdef _WIN32
-	temp_len = PATH_MAX;
-	r = sc_ctx_win32_get_config_value("OPENSC_CONF", "ConfigFile", "Software\\OpenSC Project\\OpenSC",
-		temp_path, &temp_len);
-	if (r)   {
-		sc_log(ctx, "process_config_file doesn't find opensc config file. Please set the registry key.");
+	conf_path = getenv("LATVIAEID_CONF");
+	if (!conf_path) {
+		rc = RegOpenKeyEx(HKEY_CURRENT_USER, "Software\\LATVIA eID\\OpenSC", 0, KEY_QUERY_VALUE, &hKey);
+		if (rc == ERROR_SUCCESS) {
+			temp_len = PATH_MAX;
+			rc = RegQueryValueEx( hKey, "ConfigFile", NULL, NULL, (LPBYTE) temp_path, &temp_len);
+			if ((rc == ERROR_SUCCESS) && (temp_len < PATH_MAX))
+				conf_path = temp_path;
+			RegCloseKey(hKey);
+		}
+	}
+
+	if (!conf_path) {
+		rc = RegOpenKeyEx( HKEY_LOCAL_MACHINE, "Software\\LATVIA eID\\OpenSC", 0, KEY_QUERY_VALUE, &hKey );
+		if (rc == ERROR_SUCCESS) {
+			temp_len = PATH_MAX;
+			rc = RegQueryValueEx( hKey, "ConfigFile", NULL, NULL, (LPBYTE) temp_path, &temp_len);
+			if ((rc == ERROR_SUCCESS) && (temp_len < PATH_MAX))
+				conf_path = temp_path;
+			RegCloseKey(hKey);
+		}
+	}
+
+	if (!conf_path) {
+		sc_debug(ctx, SC_LOG_DEBUG_NORMAL, "process_config_file doesn't find opensc config file. Please set the registry key.");
 		return;
 	}
 	conf_path = temp_path;
 #else
-	conf_path = getenv("OPENSC_CONF");
+	conf_path = getenv("LATVIAEID_CONF");
 	if (!conf_path)
 		conf_path = OPENSC_CONF_PATH;
 #endif
@@ -768,8 +831,18 @@ int sc_context_create(sc_context_t **ctx_out, const sc_context_param_t *parm)
 	}
 
 	process_config_file(ctx, &opts);
-	sc_log(ctx, "==================================="); /* first thing in the log */
-	sc_log(ctx, "opensc version: %s", sc_get_version());
+    sc_debug(ctx, SC_LOG_DEBUG_NORMAL, "\n\n");
+	sc_debug(ctx, SC_LOG_DEBUG_NORMAL, "==================================="); /* first thing in the log */
+	sc_debug(ctx, SC_LOG_DEBUG_NORMAL, "Latvia eID Middleware : %s", sc_get_version());
+
+#ifdef HAVE_LTDL_H
+	/* initialize ltdl, if available. See scdl.c for more information */
+	if (lt_dlinit() != 0) {
+		sc_debug(ctx, SC_LOG_DEBUG_NORMAL, "lt_dlinit() failed");
+		sc_release_context(ctx);
+		return SC_ERROR_INTERNAL;
+	}
+#endif
 
 #ifdef ENABLE_PCSC
 	ctx->reader_driver = sc_get_pcsc_driver();

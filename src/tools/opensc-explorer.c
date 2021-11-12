@@ -1191,9 +1191,9 @@ static int do_change(int argc, char **argv)
 
 static int do_unblock(int argc, char **argv)
 {
-	int ref, r;
-	u8 puk[64];
-	u8 newpin[64];
+	int ref,puk_ref, r;
+	u8 puk[30];
+	u8 newpin[30];
 	size_t puklen = 0;
 	size_t newpinlen = 0;
 	struct sc_pin_cmd_data data;
@@ -1203,16 +1203,27 @@ static int do_unblock(int argc, char **argv)
 
 	if (argc < 1 || argc > 3)
 		return usage(do_unblock);
+	if (argc < 2 || argc > 4)
+		goto usage;
 	if (strncasecmp(argv[0], "CHV", 3)) {
 		printf("Invalid type.\n");
 		return usage(do_unblock);
 	}
 	if (sscanf(argv[0] + 3, "%d", &ref) != 1) {
-		printf("Invalid key reference.\n");
-		return usage(do_unblock);
+		printf("Invalid pin reference.\n");
+		goto usage;
 	}
+	
+	if (strncasecmp(argv[1], "PUK", 3)) {
+		printf("Invalid type.\n");
+		goto usage;
+	}
+	if (sscanf(argv[1] + 3, "%d", &puk_ref) != 1) {
+		printf("Invalid puk reference.\n");
+		goto usage;
+	}	
 
-	if (argc > 1) {
+	if (argc > 2) {
 		puklen = sizeof(puk);
 		if (parse_string_or_hexdata(argv[1], puk, &puklen) != 0) {
 			printf("Invalid key value.\n");
@@ -1220,7 +1231,7 @@ static int do_unblock(int argc, char **argv)
 		}
 	}
 
-	if (argc > 2)   {
+	if (argc > 3)   {
 		newpinlen = sizeof(newpin);
 		if (parse_string_or_hexdata(argv[2], newpin, &newpinlen) != 0) {
 			printf("Invalid key value.\n");
@@ -1228,14 +1239,9 @@ static int do_unblock(int argc, char **argv)
 		}
 	}
 
-	data.pin_type = SC_AC_CHV;
-	data.pin_reference = ref;
-	data.pin1.data = puklen ? puk : NULL;
-	data.pin1.len = puklen;
-	data.pin2.data = newpinlen ? newpin : NULL;
-	data.pin2.len = newpinlen;
-
-	r = sc_pin_cmd(card, &data, NULL);
+	r = sc_reset_retry_counter (card, SC_AC_CHV, puk_ref, ref,
+                                      puklen ? puk : NULL, puklen,
+                                      newpinlen ? newpin : NULL, newpinlen);
 	if (r) {
 		if (r == SC_ERROR_PIN_CODE_INCORRECT)
 			printf("Incorrect code.\n");
@@ -1244,6 +1250,18 @@ static int do_unblock(int argc, char **argv)
 	}
 	printf("PIN unblocked.\n");
 	return 0;
+usage:
+	printf("Usage: unblock CHV<pin ref> PUK<puk ref> [<puk> [<new pin>]]\n");
+	printf("PUK and PIN values can be hexadecimal, ASCII, empty (\"\") or absent\n");
+	printf("Examples:\n");
+	printf("\tUnblock PIN and set a new value:   unblock CHV2 PUK1 00:00:00:00:00:00 \"foobar\"\n");
+	printf("\tUnblock PIN keeping the old value: unblock CHV2 PUK1 00:00:00:00:00:00 \"\"\n");
+	printf("\tSet new PIN value:                 unblock CHV2 PUK1 \"\" \"foobar\"\n");
+	printf("Examples with pinpad:\n");
+	printf("\tUnblock PIN: new PIN value is prompted by pinpad:                   unblock CHV2 PUK1 00:00:00:00:00:00\n");
+	printf("\tSet PIN: new PIN value is prompted by pinpad:                       unblock CHV2 PUK1 \"\"\n");
+	printf("\tUnblock PIN: unblock code and new PIN value are prompted by pinpad: unblock CHV2 PUK1\n");
+	return -1;
 }
 
 static int do_get(int argc, char **argv)

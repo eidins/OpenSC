@@ -314,6 +314,7 @@ typedef struct sc_reader {
 	unsigned int supported_protocols, active_protocol;
 	size_t max_send_size; /* Max Lc supported by the reader layer */
 	size_t max_recv_size; /* Mac Le supported by the reader layer */
+    int pin_minLength, pin_maxLength;
 
 	struct sc_atr atr;
 	struct sc_uid uid;
@@ -378,6 +379,7 @@ struct sc_pin_cmd_data {
 
 	unsigned int pin_type;		/* usually SC_AC_CHV */
 	int pin_reference;
+    int so_pin_reference;
 
 	struct sc_pin_cmd_pin pin1, pin2;
 
@@ -593,6 +595,7 @@ struct sc_card_operations {
 				     const u8 *newref, size_t newlen,
 				     int *tries_left);
 	int (*reset_retry_counter)(struct sc_card *card, unsigned int type,
+                   int so_ref_qualifier,
 				   int ref_qualifier,
 				   const u8 *puk, size_t puklen,
 				   const u8 *newref, size_t newlen);
@@ -1128,8 +1131,8 @@ int sc_change_reference_data(struct sc_card *card, unsigned int type,
 			     int ref, const u8 *old, size_t oldlen,
 			     const u8 *newref, size_t newlen,
 			     int *tries_left);
-int sc_reset_retry_counter(struct sc_card *card, unsigned int type,
-			   int ref, const u8 *puk, size_t puklen,
+int sc_reset_retry_counter(sc_card_t *card, unsigned int type,
+			   int so_ref, int ref, const u8 *puk, size_t puklen,
 			   const u8 *newref, size_t newlen);
 int sc_build_pin(u8 *buf, size_t buflen, struct sc_pin_cmd_pin *pin, int pad);
 
