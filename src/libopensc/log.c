@@ -75,7 +75,9 @@ static void sc_do_log_va(sc_context_t *ctx, int level, const char *file, int lin
 	FILE		*outf = NULL;
 	int		n;
 
-	if (!ctx || ctx->debug < level)
+	assert(ctx != NULL);
+
+	if ((ctx->debug < level) || (ctx->debug_file == NULL))
 		return;
 
 	p = buf;

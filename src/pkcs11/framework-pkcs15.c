@@ -470,6 +470,8 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo)
 	struct sc_pkcs15_card *p15card = NULL;
 	struct sc_pkcs15_object *auth;
 	struct sc_pkcs15_auth_info *pin_info;
+	struct sc_pin_cmd_data data;
+	int r;
 	CK_RV rv;
 
 	sc_log(context, "C_GetTokenInfo(%lx)", slotID);
@@ -479,6 +481,8 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo)
 	rv = sc_pkcs11_lock();
 	if (rv != CKR_OK)
 		return rv;
+
+	sc_debug(context, SC_LOG_DEBUG_NORMAL, "Start C_GetTokenInfo(%lx)", slotID);
 
 	rv = slot_get_token(slotID, &slot);
 	if (rv != CKR_OK)   {
@@ -499,6 +503,34 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo)
 		pin_info = (struct sc_pkcs15_auth_info*) auth->data;
 
 		sc_pkcs15_get_pin_info(p15card, auth);
+		if (pin_info->auth_type != SC_PKCS15_PIN_AUTH_TYPE_PIN)   {
+			rv = CKR_FUNCTION_REJECTED;
+			goto out;
+		}
+
+		/* Try to update PIN info from card */
+		memset(&data, 0, sizeof(data));
+		data.cmd = SC_PIN_CMD_GET_INFO;
+		data.pin_type = SC_AC_CHV;
+		data.pin_reference = pin_info->attrs.pin.reference;
+
+        r = sc_lock(slot->p11card->card);
+        if (r)
+        {
+            sc_debug(context, SC_LOG_DEBUG_NORMAL, "C_GetTokenInfo(%lx) : Failed to take PC/SC transaction", slotID);
+            rv = CKR_FUNCTION_FAILED;
+            goto out;
+        }
+
+		r = sc_pin_cmd(slot->p11card->card, &data, NULL);
+		if (r == SC_SUCCESS) {
+			if (data.pin1.max_tries > 0)
+				pin_info->max_tries = data.pin1.max_tries;
+			/* tries_left must be supported or sc_pin_cmd should not return SC_SUCCESS */
+			pin_info->tries_left = data.pin1.tries_left;
+		}
+
+        sc_unlock(slot->p11card->card);
 
 		if (pin_info->tries_left >= 0) {
 			if (pin_info->tries_left == 1 || pin_info->max_tries == 1)
@@ -509,8 +541,55 @@ CK_RV C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo)
 				slot->token_info.flags |= CKF_USER_PIN_COUNT_LOW;
 		}
 	}
+
+	/* User PIN flags are cleared before re-calculation */
+	slot->token_info.flags &= ~(CKF_SO_PIN_COUNT_LOW|CKF_SO_PIN_FINAL_TRY|CKF_SO_PIN_LOCKED);
+	fw_data = (struct pkcs15_fw_data *) slot->p11card->fw_data;
+	if (fw_data) 
+	{
+		auth = NULL;
+		p15card = fw_data->p15_card;
+		r = sc_pkcs15_find_so_pin(p15card, &auth);
+		if ((r == 0) && auth) 
+		{
+			pin_info = (struct sc_pkcs15_auth_info*) auth->data;
+
+			if (pin_info->auth_type == SC_PKCS15_PIN_AUTH_TYPE_PIN)   {
+				/* Try to update SO PIN info from card */
+				memset(&data, 0, sizeof(data));
+				data.cmd = SC_PIN_CMD_GET_INFO;
+				data.pin_type = SC_AC_CHV;
+				data.pin_reference = pin_info->attrs.pin.reference;
+
+				r = sc_lock(slot->p11card->card);
+				if (r == 0)
+				{
+					r = sc_pin_cmd(slot->p11card->card, &data, NULL);
+					if (r == SC_SUCCESS) {
+						if (data.pin1.max_tries > 0)
+							pin_info->max_tries = data.pin1.max_tries;
+						/* tries_left must be supported or sc_pin_cmd should not return SC_SUCCESS */
+						pin_info->tries_left = data.pin1.tries_left;
+					}
+
+					sc_unlock(slot->p11card->card);
+
+					if (pin_info->tries_left >= 0) {
+						if (pin_info->tries_left == 1 || pin_info->max_tries == 1)
+							slot->token_info.flags |= CKF_SO_PIN_FINAL_TRY;
+						else if (pin_info->tries_left == 0)
+							slot->token_info.flags |= CKF_SO_PIN_LOCKED;
+						else if (pin_info->max_tries > 1 && pin_info->tries_left < pin_info->max_tries)
+							slot->token_info.flags |= CKF_SO_PIN_COUNT_LOW;
+					}
+				}
+			}
+		}
+	}
+
 	memcpy(pInfo, &slot->token_info, sizeof(CK_TOKEN_INFO));
 out:
+    sc_debug(context, SC_LOG_DEBUG_NORMAL, "End C_GetTokenInfo(%lx) with code 0x%.8X", slotID, rv);
 	sc_pkcs11_unlock();
 	sc_log(context, "C_GetTokenInfo(%lx) returns 0x%lX", slotID, rv);
 	return rv;
@@ -1436,6 +1515,16 @@ pkcs15_login(struct sc_pkcs11_slot *slot, CK_USER_TYPE userType,
 			return sc_to_cryptoki_error(rc, "C_Login");
 		}
 
+        if ((rc == 0) &&
+            (sc_pkcs11_conf.pin_unblock_style == SC_PKCS11_PIN_UNBLOCK_SO_LOGGED_INITPIN)
+            )
+        {
+			if (ulPinLen && ulPinLen < sizeof(fw_data->user_puk))   {
+				memcpy(fw_data->user_puk, pPin, ulPinLen);
+				fw_data->user_puk_len = ulPinLen;
+			}
+        }
+
 		break;
 	case CKU_CONTEXT_SPECIFIC:
 		/*
@@ -1640,9 +1729,16 @@ pkcs15_change_pin(struct sc_pkcs11_slot *slot,
 		 * NULL ourselves. This way, you can supply an empty (if
 		 * possible) or fake PIN if an application asks a PIN).
 		 */
-		pOldPin = pNewPin = NULL;
-		ulOldLen = ulNewLen = 0;
-	}
+		/* But we want to be able to specify a PIN on the command
+		 * line (e.g. for the test scripts). So we don't do anything
+		 * here - this gives the user the choice of entering
+		 * an empty pin (which makes us use the pin pad) or
+		 * a valid pin (which is processed normally). --okir */
+        if (ulOldLen == 0)
+		    pOldPin = NULL;
+        if (ulNewLen == 0)
+            pNewPin = NULL;
+	} 
 	else if (ulNewLen < auth_info->attrs.pin.min_length || ulNewLen > auth_info->attrs.pin.max_length)  {
 		return CKR_PIN_LEN_RANGE;
 	}
@@ -1654,12 +1750,12 @@ pkcs15_change_pin(struct sc_pkcs11_slot *slot,
 		}
 		rc = sc_pkcs15_unblock_pin(fw_data->p15_card, pin_obj, pOldPin, ulOldLen, pNewPin, ulNewLen);
 	}
-	else if (login_user == CKU_CONTEXT_SPECIFIC)   {
+	if (login_user == CKU_CONTEXT_SPECIFIC)   {
 		if (sc_pkcs11_conf.pin_unblock_style != SC_PKCS11_PIN_UNBLOCK_SCONTEXT_SETPIN) {
 			sc_log(context, "PIN unlock is not allowed with CKU_CONTEXT_SPECIFIC login");
 			return CKR_FUNCTION_NOT_SUPPORTED;
 		}
-		rc = sc_pkcs15_unblock_pin(fw_data->p15_card, pin_obj, pOldPin, ulOldLen, pNewPin, ulNewLen);
+		rc = sc_pkcs15_unblock_pin(fw_data->p15_card, NULL, pin_obj, pOldPin, ulOldLen, pNewPin, ulNewLen);
 	}
 	else if ((login_user == CKU_USER) || (login_user == CKU_SO)) {
 		rc = sc_pkcs15_change_pin(fw_data->p15_card, pin_obj, pOldPin, ulOldLen, pNewPin, ulNewLen);
@@ -1808,11 +1904,14 @@ static CK_RV
 pkcs15_init_pin(struct sc_pkcs11_slot *slot, CK_CHAR_PTR pPin, CK_ULONG ulPinLen)
 {
 	struct sc_pkcs11_card *p11card = slot->p11card;
+    struct sc_pkcs15_card *p15card = fw_data->p15_card;
 	struct pkcs15_fw_data *fw_data = NULL;
 	struct sc_pkcs15init_pinargs args;
 	struct sc_profile	*profile = NULL;
 	struct sc_pkcs15_object	*auth_obj = NULL;
+    struct sc_pkcs15_object	*so_auth_obj;
 	struct sc_pkcs15_auth_info *auth_info = NULL;
+    struct sc_pkcs15_auth_info *so_auth_info;
 	struct sc_cardctl_pkcs11_init_pin p11args;
 	int rc;
 
@@ -1836,15 +1935,23 @@ pkcs15_init_pin(struct sc_pkcs11_slot *slot, CK_CHAR_PTR pPin, CK_ULONG ulPinLen
 	auth_info = slot_data_auth_info(slot->fw_data);
 	if (auth_info && sc_pkcs11_conf.pin_unblock_style == SC_PKCS11_PIN_UNBLOCK_SO_LOGGED_INITPIN)   {
 		/* C_InitPIN is used to unblock User PIN or set it in the SO session .*/
-		auth_obj = slot_data_auth(slot->fw_data);
-		if (fw_data->user_puk_len)
-			rc = sc_pkcs15_unblock_pin(fw_data->p15_card, auth_obj,
+        rc = sc_pkcs15_find_so_pin(p15card, &so_auth_obj);
+        if (rc != 0)
+        {
+            sc_debug(context, SC_LOG_DEBUG_NORMAL, "No SOPIN found; returns %d", rc);
+            return sc_to_cryptoki_error(rc, "C_InitPIN");
+        }
+        so_auth_info = (struct sc_pkcs15_auth_info *)so_auth_obj->data;
+
+        auth_obj = slot_data_auth(slot->fw_data);
+		if (fw_data->user_puk_len)   {            
+			rc = sc_pkcs15_unblock_pin(fw_data->p15_card, so_auth_obj, auth_obj, 
 					fw_data->user_puk, fw_data->user_puk_len, pPin, ulPinLen);
 		else
 			/* FIXME (VT): Actually sc_pkcs15_unblock_pin() do not accepts zero length PUK.
 			 * Something like sc_pkcs15_set_pin() should be introduced.
 			 * For a while, use the 'libopensc' API to set PIN. */
-			rc = sc_reset_retry_counter(fw_data->p15_card->card, SC_AC_CHV, auth_info->attrs.pin.reference,
+			rc = sc_reset_retry_counter(fw_data->p15_card->card, SC_AC_CHV, so_auth_info->attrs.pin.reference, auth_info->attrs.pin.reference, 
 					NULL, 0, pPin, ulPinLen);
 
 		return sc_to_cryptoki_error(rc, "C_InitPIN");

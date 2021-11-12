@@ -71,7 +71,9 @@
 
 /* disable asserts */
 #ifndef SIMCLIST_DEBUG
+#ifndef NDEBUG
 #define NDEBUG
+#endif
 #endif
 
 #include <assert.h>
@@ -404,6 +406,14 @@ static simclist_inline struct list_entry_s *list_findpos(const list_t *simclist_
 
     /* accept 1 slot overflow for fetching head and tail sentinels */
     if (posstart < -1 || posstart > (int)l->numels) return NULL;
+	
+    if (l->numels == 0)
+    {
+        if (posstart == -1)
+            return l->head_sentinel;
+        else
+            return NULL;
+    }	
 
     x = (float)(posstart+1) / l->numels;
     if (x <= 0.25) {

@@ -440,7 +440,7 @@ void load_pkcs11_parameters(struct sc_pkcs11_config *conf, sc_context_t * ctx)
 	conf->atomic = 0;
 	conf->lock_login = 0;
 	conf->init_sloppy = 1;
-	conf->pin_unblock_style = SC_PKCS11_PIN_UNBLOCK_NOT_ALLOWED;
+	conf->pin_unblock_style = SC_PKCS11_PIN_UNBLOCK_SO_LOGGED_INITPIN;
 	conf->create_puk_slot = 0;
 	conf->zero_ckaid_for_ca_certs = 0;
 	conf->create_slots_flags = SC_PKCS11_SLOT_CREATE_ALL;

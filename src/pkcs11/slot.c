@@ -195,7 +195,7 @@ CK_RV card_detect(sc_reader_t *reader)
 	struct sc_pkcs11_card *p11card = NULL;
 	int rc;
 	CK_RV rv;
-	unsigned int i;
+	unsigned int i, releaseTransaction = 0;
 	int j;
 
 	rv = CKR_OK;
@@ -249,8 +249,11 @@ again:
 		rc = sc_connect_card(reader, &p11card->card);
 		if (rc != SC_SUCCESS)   {
 			sc_log(context, "%s: SC connect card error %i", reader->name, rc);
+            free(p11card);
 			return sc_to_cryptoki_error(rc, NULL);
-		}
+        }
+        else
+            releaseTransaction = 1;
 
 		sc_log(context, "%s: Connected SC card %p", reader->name, p11card->card);
 	}
@@ -261,18 +264,43 @@ again:
 
 		sc_log(context, "%s: Detecting Framework. %i on-card applications", reader->name, p11card->card->app_count);
 		sc_log(context, "%s: generic application %s", reader->name, app_generic ? app_generic->label : "<none>");
+        for (i = 0; frameworks[i]; i++) {
+			if (frameworks[i]->bind == NULL)
+				continue;
+			rv = frameworks[i]->bind(p11card);
+			if (rv == CKR_OK)
+				break;
+		}
 
 		for (i = 0; frameworks[i]; i++)
 			if (frameworks[i]->bind != NULL)
 				break;
 		/*TODO: only first framework is used: pkcs15init framework is not reachable here */
 		if (frameworks[i] == NULL)
-			return CKR_GENERAL_ERROR;
-
-		p11card->framework = frameworks[i];
+		{
+            if (releaseTransaction)
+            {
+                // release transaction
+                sc_unlock(p11card->card);
+            }
+			return CKR_TOKEN_NOT_RECOGNIZED;
+        }
 
 		/* Initialize framework */
-		sc_log(context, "%s: Detected framework %d. Creating tokens.", reader->name, i);
+		sc_debug(context, SC_LOG_DEBUG_NORMAL, "%s: Detected framework %d. Creating tokens.\n", reader->name, i);
+		rv = frameworks[i]->create_tokens(p11card);       
+		
+        if (rv != CKR_OK)
+        {
+            if (releaseTransaction)
+            {
+                // release transaction
+                sc_unlock(p11card->card);
+            }
+			return rv;
+        }
+
+		p11card->framework = frameworks[i];
 		/* Bind 'generic' application or (emulated?) card without applications */
 		if (app_generic || !p11card->card->app_count)   {
 			scconf_block *atrblock = NULL;
@@ -324,8 +352,12 @@ again:
 			}
 		}
 	}
-
-	sc_log(context, "%s: Detection ended", reader->name);
+    if (releaseTransaction)
+    {
+        // release transaction
+        sc_unlock(p11card->card);
+    }
+	sc_debug(context, SC_LOG_DEBUG_NORMAL, "%s: Detection ended\n", reader->name);
 	return CKR_OK;
 }
 
